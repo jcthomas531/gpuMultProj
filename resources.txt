@@ -1,0 +1,7 @@
+best: https://siboehm.com/articles/22/CUDA-MMM
+
+https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html?highlight=matrix%20multiply
+https://kharshit.github.io/blog/2024/06/07/matrix-multiplication-cuda
+https://www.quantstart.com/articles/Matrix-Matrix-Multiplication-on-the-GPU-with-Nvidia-CUDA/
+https://www.cise.ufl.edu/~sahni/papers/gpuMatrixMultiply.pdf
+https://towardsdatascience.com/matrix-multiplication-on-the-gpu-e920e50207a8/

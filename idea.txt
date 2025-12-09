@@ -1,0 +1,12 @@
+cuda tutorials, a good example would be matrix multiplication on gpus, not simple but it is well documented, 
+niavely, this spreads dot products for each ij for each core in the GPU, lots of redundant memory access
+how does this compare to a single thread
+memory optimization
+block iteration multiplication
+even sums are often multithreaded
+
+
+cuda tutorials for algorithms that take advantage of the gpu
+page 264, OpenCL in action will help you get some of the vocab for things to look up
+
+could also look at how nueral networks interact with a gpu

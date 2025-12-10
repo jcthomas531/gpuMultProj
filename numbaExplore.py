@@ -231,7 +231,9 @@ CRes = C_gpu.copy_to_host()
 
 CTest = A @ B
 np.allclose(CTest, CRes, atol=1e-4, rtol=1e-4)
-#tolerance can be an issue when using float32, something to look into later
+#tolerance can be an issue when using float32, not as percise as 64 but will 
+#work faster, should be consistent across all methods used, float32 is probably 
+#better here and just lowering the tolerance threshold
 
 
 
@@ -241,8 +243,75 @@ np.allclose(CTest, CRes, atol=1e-4, rtol=1e-4)
 
 
 
+###############################################################################
+#making above into a factory so i can dynamically set dimension size
+###############################################################################
+def tileMultFactory(tileSize):
+    @cuda.jit
+    def tileMult(A, B, C):
+        
+        #initialize an array in the shared memory for the parts of A and B to be loaded in
+        #dimension and type must be known when this compiles
+        sA = cuda.shared.array(shape=(tileSize, tileSize), dtype=float32)
+        sB = cuda.shared.array(shape=(tileSize, tileSize), dtype=float32)
+        
+        #get the position of the thread relative to the entire grid
+        absX, absY = cuda.grid(2)
+        
+        #get the position of the thread realtive to the block
+        relX = cuda.threadIdx.x
+        relY = cuda.threadIdx.y
+        
+        #tells us how many blocks are in the grid
+        bpg = cuda.gridDim.x  
+        
+        
+        
+        #ensure that our absolute position is within the boundary of our output
+        if absX >= C.shape[0] and absY >= C.shape[1]:
+            # Quit if (absX, absY) is outside of valid C boundary
+            return
+        
+        
+        
+        #now we can start to work within the shared memory
+        #initialize value that will be added to across all the blocks corresponding
+        #to this element
+        tmp = 0.
+        #iterating over all of the blocks in our grid
+        for i in range(bpg):
+            # Preload data into shared memory
+            #load the block we want into shared memory one element at a time
+            #this is done one element at a time bc threads work on one element 
+            #of the matrix only
+            #in words:
+            #sA[realtiveX, relativeY] = A[absX, relativeY + blockNum * tileSize]
+            #the addition here allows us to offset based on which block we are in
+            #beause in order to calculate a single tile, we must load multiple blocks in
+            sA[relX, relY] = A[absX, relY + i * tileSize]
+            sB[relX, relY] = B[relX + i * tileSize, absY]
+            
+            
+            #in order to do the multiplication correctly, we need to make sure that
+            #one thread is not in one block while another thread is in a different one
+            #to do this, we sync the threads
+            cuda.syncthreads()
+
+            #do the basic multiplication for the current thread using the current block
+            #this is just as we did on the naive implimentation but now this value will
+            #be added to as the outer loop moves through the blocks
+            for j in range(tileSize):
+                tmp += sA[relX, j] * sB[j, relY]
+
+            #sync again so that we know we are done adding to this value before it
+            #goes into the result matrix
+            cuda.syncthreads()
+
+        C[absX, absY] = tmp
+    return tileMult
 
 
+tileMult = tileMultFactory(10)
 
 
 
@@ -251,12 +320,43 @@ np.allclose(CTest, CRes, atol=1e-4, rtol=1e-4)
 #operationalizing timing and computation
 ###############################################################################
 
-A = np.random.normal(size = (10, 20))
-B = np.random.normal(size = (20, 30))
+A = np.random.normal(size = (20, 20))
+B = np.random.normal(size = (20, 20))
 
 def multTimes(A,B, threads = 20):    
     if A.shape[1] != B.shape[0]:
         raise Exception("non-conformable arrays")
+    if A.shape[0] != A.shape[1]:
+        raise Exception("A is not square")
+    if B.shape[0] != B.shape[1]:
+        raise Exception("B is not square")
+    
+    
+    #dimension, will be the same bc we are only allowing square matrices
+    N = A.shape[0]
+    #using correct numeric type, less exact with float32 compared to float64 but it
+    #will run quicker, we just have to remember to turn down the tolerance when checking
+    A = A.astype(np.float32)
+    B = B.astype(np.float32)
+    
+    #set up for gpu
+    #response matrix
+    C = np.empty((N, N)).astype(np.float32)
+    #thread set up
+    threadsPerBlock = (threads,threads)
+    blocksPerGrid_x = int(np.ceil(C.shape[0]/threadsPerBlock[0]))
+    blocksPerGrid_y = int(np.ceil(C.shape[1]/threadsPerBlock[1]))
+    gridSize = (blocksPerGrid_x, blocksPerGrid_y)
+    #send A,B to gpu
+    #not timing this, just compute speed
+    A_gpu = cuda.to_device(A)
+    B_gpu = cuda.to_device(B)
+    
+    
+    
+    
+    
+    
     
     #numpy multiplication
     npStart = time.time()
@@ -271,49 +371,56 @@ def multTimes(A,B, threads = 20):
     ncTime =  ncEnd - ncStart
     
     #naive gpu
-    #set up response matrix
-    C = np.empty((A.shape[0], B.shape[1]))
-    # C[:] = np.nan
-    #thread set up
-    threadsPerBlock = (threads,threads)
-    blocksPerGrid_x = int(np.ceil(C.shape[0]/threadsPerBlock[0]))
-    blocksPerGrid_y = int(np.ceil(C.shape[1]/threadsPerBlock[1]))
-    gridSize = (blocksPerGrid_x, blocksPerGrid_y)
-    #send A,B,C to gpu
-    #not timing this, just compute speed
-    A_gpu = cuda.to_device(A)
-    B_gpu = cuda.to_device(B)
-    C_gpu = cuda.to_device(C)
+    ngC_gpu = cuda.device_array((N, N), dtype=np.float32)
     #warm up round, otherwise the kernel must compile
-    naiveGpu[gridSize, threadsPerBlock](A_gpu, B_gpu, C_gpu)
+    naiveGpu[gridSize, threadsPerBlock](A_gpu, B_gpu, ngC_gpu)
     cuda.synchronize()
     #perform multiplication
-    bgStart = time.time()
+    ngStart = time.time()
     #since this is executed on a different device, once this command is sent to the 
     #gpu, the rest of the code continues to operate on the cpu until this piece
     #is called upon. Then, if it is not finished, the cpu waits for the result to 
     #come back. in order to get proper timings, we must force it to finish before
     #moving on to the next piece, we can do that with cuda.synchronize()
-    naiveGpu[gridSize, threadsPerBlock](A_gpu, B_gpu, C_gpu)
+    naiveGpu[gridSize, threadsPerBlock](A_gpu, B_gpu, ngC_gpu)
     cuda.synchronize()
-    bgEnd = time.time()
-    bgTime = bgEnd - bgStart
+    ngEnd = time.time()
+    ngTime = ngEnd - ngStart
     #retrieve value from gpu
     #not timing this, just compute speed
-    bgC = C_gpu.copy_to_host()
+    ngC = ngC_gpu.copy_to_host()
+    
+    
+    #tile gpu method
+    tiC_gpu = cuda.device_array((N, N), dtype=np.float32)
+    #use factory to create function so dimension can be dynamic
+    tileMult = tileMultFactory(threads)
+    #warm up
+    tileMult[gridSize, threadsPerBlock](A_gpu, B_gpu, tiC_gpu)
+    cuda.synchronize()
+    #perform multiplication
+    tiStart = time.time()
+    tileMult[gridSize, threadsPerBlock](A_gpu, B_gpu, tiC_gpu)
+    cuda.synchronize()
+    tiEnd = time.time()
+    tiTime = tiEnd - tiStart
+    #retrieve value
+    tiC = tiC_gpu.copy_to_host()    
     
     
     
     #check all values against numpy implimentation
-    if np.allclose(npC, ncC) == False:
-        raise Exception("nc and bg multiplactions have different results")
-    if np.allclose(npC, bgC) == False:
-        raise Exception("np and bg multiplactions have different results")
+    if np.allclose(npC, ncC, atol=1e-4, rtol=1e-4) == False:
+        raise Exception("np and nc multiplactions have different results")
+    if np.allclose(npC, ngC, atol=1e-4, rtol=1e-4) == False:
+        raise Exception("np and ng multiplactions have different results")
+    if np.allclose(npC, tiC, atol=1e-4, rtol=1e-4) == False:
+        raise Exception("np and ti multiplactions have different results")
     
-    return {"npTime": npTime, "ncTime": ncTime, "bgTime": bgTime}
+    return {"npTime": npTime, "ncTime": ncTime, "ngTime": ngTime, "tiTime": tiTime}
     
 
-multTimes(A, B)
+multTimes(A, B, threads=10)
 
 
 ###############################################################################
@@ -326,7 +433,7 @@ timeHolder = pd.DataFrame({
     "dims": dims,
     "npTime": [np.nan]*len(dims),
     "ncTime": [np.nan]*len(dims),
-    "bgTime": [np.nan]*len(dims)
+    "ngTime": [np.nan]*len(dims)
     })
 
 for i in range(timeHolder.shape[0]):
@@ -336,7 +443,7 @@ for i in range(timeHolder.shape[0]):
     resi = multTimes(Ai, Bi)
     timeHolder.loc[i,"npTime"] = resi["npTime"]
     timeHolder.loc[i,"ncTime"] = resi["ncTime"]
-    timeHolder.loc[i,"bgTime"] = resi["bgTime"]
+    timeHolder.loc[i,"ngTime"] = resi["ngTime"]
     print("dimension "+str(dimi)+" complete")
 
 

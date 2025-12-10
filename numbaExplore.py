@@ -246,6 +246,8 @@ np.allclose(CTest, CRes, atol=1e-4, rtol=1e-4)
 ###############################################################################
 #making above into a factory so i can dynamically set dimension size
 ###############################################################################
+#if you dont do this, you have set a single dimension size and once the code
+#compiles (ie the function is run), you cannot change it
 def tileMultFactory(tileSize):
     @cuda.jit
     def tileMult(A, B, C):
@@ -323,7 +325,7 @@ tileMult = tileMultFactory(10)
 A = np.random.normal(size = (20, 20))
 B = np.random.normal(size = (20, 20))
 
-def multTimes(A,B, threads = 20):    
+def multTimes(A,B, threads = 20, avoidMassiveCpu = True):    
     if A.shape[1] != B.shape[0]:
         raise Exception("non-conformable arrays")
     if A.shape[0] != A.shape[1]:
@@ -365,10 +367,15 @@ def multTimes(A,B, threads = 20):
     npTime = npEnd - npStart
     
     #naive cpu
-    ncStart = time.time()
-    ncC = naiveCpu(A, B)
-    ncEnd = time.time()
-    ncTime =  ncEnd - ncStart
+    #avoid large computations with niave method
+    if avoidMassiveCpu == True and N>800:
+        ncTime = np.nan
+        ncC = npC
+    else :
+        ncStart = time.time()
+        ncC = naiveCpu(A, B)
+        ncEnd = time.time()
+        ncTime =  ncEnd - ncStart
     
     #naive gpu
     ngC_gpu = cuda.device_array((N, N), dtype=np.float32)
@@ -408,13 +415,13 @@ def multTimes(A,B, threads = 20):
     tiC = tiC_gpu.copy_to_host()    
     
     
-    
+    tol_ = 1e-3
     #check all values against numpy implimentation
-    if np.allclose(npC, ncC, atol=1e-4, rtol=1e-4) == False:
+    if np.allclose(npC, ncC, atol=tol_, rtol=tol_) == False:
         raise Exception("np and nc multiplactions have different results")
-    if np.allclose(npC, ngC, atol=1e-4, rtol=1e-4) == False:
+    if np.allclose(npC, ngC, atol=tol_, rtol=tol_) == False:
         raise Exception("np and ng multiplactions have different results")
-    if np.allclose(npC, tiC, atol=1e-4, rtol=1e-4) == False:
+    if np.allclose(npC, tiC, atol=tol_, rtol=tol_) == False:
         raise Exception("np and ti multiplactions have different results")
     
     return {"npTime": npTime, "ncTime": ncTime, "ngTime": ngTime, "tiTime": tiTime}
@@ -428,12 +435,13 @@ multTimes(A, B, threads=10)
 ###############################################################################
 
 import pandas as pd
-dims = (10,100,200,300)
+dims = (20, 100,200,400,800,1000,2000,4000,8000,10000)
 timeHolder = pd.DataFrame({
     "dims": dims,
     "npTime": [np.nan]*len(dims),
     "ncTime": [np.nan]*len(dims),
-    "ngTime": [np.nan]*len(dims)
+    "ngTime": [np.nan]*len(dims),
+    "tiTime": [np.nan]*len(dims)
     })
 
 for i in range(timeHolder.shape[0]):
@@ -444,14 +452,18 @@ for i in range(timeHolder.shape[0]):
     timeHolder.loc[i,"npTime"] = resi["npTime"]
     timeHolder.loc[i,"ncTime"] = resi["ncTime"]
     timeHolder.loc[i,"ngTime"] = resi["ngTime"]
+    timeHolder.loc[i,"tiTime"] = resi["tiTime"]
+    print(timeHolder.iloc[i,:])
     print("dimension "+str(dimi)+" complete")
 
 
 timeHolder
+import joblib
+import os
+os.chdir("H:\\schoolFiles\\bios7330AdvComputing\\gpuMultProj")
+joblib.dump(timeHolder, "2025_12_10_2 timeHolder.joblib")
 
-import matplotlib.pyplot as plt
-plt.plot(timeHolder["dims"], timeHolder["ncTime"])
-
+#timeHolder2 = joblib.load("2025_12_10 timeHolder.joblib")
 
 
 from plotnine import *

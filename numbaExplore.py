@@ -12,6 +12,7 @@ cuda.detect()
 
 
 
+
 ###############################################################################
 #moving things to and from the GPU
 ###############################################################################
@@ -132,6 +133,116 @@ np.allclose(CTest, CRes)
 
 
 ###############################################################################
+#tiling gpu approach
+###############################################################################
+#this is only set up to work on square matrices!!!!!!!!
+from numba import float32, int32, float64
+
+
+
+
+#define the tile size, this is the size of the block in terms of threads
+blockDim = 16
+@cuda.jit
+def tileMult(A, B, C):
+    
+    #initialize an array in the shared memory for the parts of A and B to be loaded in
+    #dimension and type must be known when this compiles
+    sA = cuda.shared.array(shape=(blockDim, blockDim), dtype=float32)
+    sB = cuda.shared.array(shape=(blockDim, blockDim), dtype=float32)
+    
+    #get the position of the thread relative to the entire grid
+    absX, absY = cuda.grid(2)
+    
+    #get the position of the thread realtive to the block
+    relX = cuda.threadIdx.x
+    relY = cuda.threadIdx.y
+    
+    #tells us how many blocks are in the grid
+    bpg = cuda.gridDim.x  
+    
+    
+    
+    #ensure that our absolute position is within the boundary of our output
+    if absX >= C.shape[0] and absY >= C.shape[1]:
+        # Quit if (absX, absY) is outside of valid C boundary
+        return
+    
+    
+    
+    #now we can start to work within the shared memory
+    #initialize value that will be added to across all the blocks corresponding
+    #to this element
+    tmp = 0.
+    #iterating over all of the blocks in our grid
+    for i in range(bpg):
+        # Preload data into shared memory
+        #load the block we want into shared memory one element at a time
+        #this is done one element at a time bc threads work on one element 
+        #of the matrix only
+        #in words:
+        #sA[realtiveX, relativeY] = A[absX, relativeY + blockNum * blockDimension]
+        #the addition here allows us to offset based on which block we are in
+        #beause in order to calculate a single tile, we must load multiple blocks in
+        sA[relX, relY] = A[absX, relY + i * blockDim]
+        sB[relX, relY] = B[relX + i * blockDim, absY]
+        
+        
+        #in order to do the multiplication correctly, we need to make sure that
+        #one thread is not in one block while another thread is in a different one
+        #to do this, we sync the threads
+        cuda.syncthreads()
+
+        #do the basic multiplication for the current thread using the current block
+        #this is just as we did on the naive implimentation but now this value will
+        #be added to as the outer loop moves through the blocks
+        for j in range(blockDim):
+            tmp += sA[relX, j] * sB[j, relY]
+
+        #sync again so that we know we are done adding to this value before it
+        #goes into the result matrix
+        cuda.syncthreads()
+
+    C[absX, absY] = tmp
+
+
+A = np.random.normal(size = (2000, 2000))
+B = np.random.normal(size = (2000, 2000))
+C = np.empty((2000, 2000))
+
+A_gpu = cuda.to_device(A)
+B_gpu = cuda.to_device(B)
+C_gpu = cuda.to_device(C)
+
+threadsPerBlock = (blockDim,blockDim)
+
+blocksPerGrid_x = int(np.ceil(C.shape[0]/threadsPerBlock[0]))
+blocksPerGrid_y = int(np.ceil(C.shape[1]/threadsPerBlock[1]))
+gridSize = (blocksPerGrid_x, blocksPerGrid_y)
+
+tileMult[gridSize, threadsPerBlock](A_gpu, B_gpu, C_gpu)
+CRes = C_gpu.copy_to_host()
+
+CTest = A @ B
+np.allclose(CTest, CRes)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+###############################################################################
 #operationalizing timing and computation
 ###############################################################################
 
@@ -205,12 +316,12 @@ multTimes(A, B)
 ###############################################################################
 
 import pandas as pd
-dims = (10,100,1000)
+dims = (10,100,200,300)
 timeHolder = pd.DataFrame({
     "dims": dims,
-    "npTime": [pd.NA]*len(dims),
-    "ncTime": [pd.NA]*len(dims),
-    "bgTime": [pd.NA]*len(dims)
+    "npTime": [np.nan]*len(dims),
+    "ncTime": [np.nan]*len(dims),
+    "bgTime": [np.nan]*len(dims)
     })
 
 for i in range(timeHolder.shape[0]):
@@ -231,9 +342,19 @@ plt.plot(timeHolder["dims"], timeHolder["ncTime"])
 
 
 
+from plotnine import *
 
 
+valueCols = [col for col in timeHolder.columns if col.endswith("Time")]
+timeHolderLong = pd.melt(timeHolder,
+                         id_vars=["dims"], #columns to keep
+                         value_vars=valueCols, #columns to pivot
+                         var_name = "method", #name for the pivoted columns
+                         value_name = "time" #name for the values
+                         )
 
+timeHolderLong["logTime"] = np.log(timeHolderLong["time"] + .0001)
+ggplot(timeHolderLong, aes(x="dims", y="logTime", color = "method")) + geom_line()
 
 
 

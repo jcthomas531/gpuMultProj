@@ -206,27 +206,32 @@ def tileMult(A, B, C):
     C[absX, absY] = tmp
 
 
-A = np.random.normal(size = (2000, 2000))
-B = np.random.normal(size = (2000, 2000))
-C = np.empty((2000, 2000))
+N = 2000
+
+A = np.random.normal(size = (N, N)).astype(np.float32)
+B = np.random.normal(size = (N, N)).astype(np.float32)
+#C = np.empty((2000, 2000)).astype(np.float32)
+
 
 A_gpu = cuda.to_device(A)
 B_gpu = cuda.to_device(B)
-C_gpu = cuda.to_device(C)
+#always initialize the empty array on the device, not the host
+#only go from host to device when you have specific value that need to be transfered
+#C_gpu = cuda.to_device(C)
+C_gpu = cuda.device_array((N, N), dtype=np.float32)
 
 threadsPerBlock = (blockDim,blockDim)
 
-blocksPerGrid_x = int(np.ceil(C.shape[0]/threadsPerBlock[0]))
-blocksPerGrid_y = int(np.ceil(C.shape[1]/threadsPerBlock[1]))
+blocksPerGrid_x = int(np.ceil(N/threadsPerBlock[0]))
+blocksPerGrid_y = int(np.ceil(N/threadsPerBlock[1]))
 gridSize = (blocksPerGrid_x, blocksPerGrid_y)
 
 tileMult[gridSize, threadsPerBlock](A_gpu, B_gpu, C_gpu)
 CRes = C_gpu.copy_to_host()
 
 CTest = A @ B
-np.allclose(CTest, CRes)
-
-
+np.allclose(CTest, CRes, atol=1e-4, rtol=1e-4)
+#tolerance can be an issue when using float32, something to look into later
 
 
 

@@ -6,7 +6,7 @@ import numpy as np
 from numba import cuda
 import time
 from numba import float32, int32, float64
-
+from threadpoolctl import threadpool_limits
 
 
 ###############################################################################
@@ -20,6 +20,9 @@ def multTimes(A,B, threads = 20, avoidMassiveCpu = True):
         raise Exception("A is not square")
     if B.shape[0] != B.shape[1]:
         raise Exception("B is not square")
+    
+    
+    
     
     
     #dimension, will be the same bc we are only allowing square matrices
@@ -50,7 +53,8 @@ def multTimes(A,B, threads = 20, avoidMassiveCpu = True):
     
     #numpy multiplication
     npStart = time.time()
-    npC = A @ B
+    with threadpool_limits(limits=1):
+        npC = A @ B
     npEnd = time.time() 
     npTime = npEnd - npStart
     
@@ -103,6 +107,17 @@ def multTimes(A,B, threads = 20, avoidMassiveCpu = True):
     tiC = tiC_gpu.copy_to_host()    
     
     
+    
+    #cupy method
+    A_gpu2 = cp.asarray(A_gpu)
+    B_gpu2 = cp.asarray(B_gpu)
+    cuStart= time.time()
+    cuC_gpu = cp.matmul(A_gpu2, B_gpu2)
+    cuEnd = time.time()
+    cuTime = cuEnd-cuStart
+    cuC = cuC_gpu.get()
+    
+    
     tol_ = 1e-3
     #check all values against numpy implimentation
     if np.allclose(npC, ncC, atol=tol_, rtol=tol_) == False:
@@ -111,8 +126,10 @@ def multTimes(A,B, threads = 20, avoidMassiveCpu = True):
         raise Exception("np and ng multiplactions have different results")
     if np.allclose(npC, tiC, atol=tol_, rtol=tol_) == False:
         raise Exception("np and ti multiplactions have different results")
+    if np.allclose(npC, cuC, atol=tol_, rtol=tol_) == False:
+        raise Exception("np and cu multiplactions have different results")
     
-    return {"npTime": npTime, "ncTime": ncTime, "ngTime": ngTime, "tiTime": tiTime}
+    return {"npTime": npTime, "ncTime": ncTime, "ngTime": ngTime, "tiTime": tiTime, "cuTime": cuTime}
     
 
 #example
@@ -187,12 +204,23 @@ def threadTimes(threads, dim = 2000):
     tiTime = tiEnd - tiStart
     #not retrieving value here
     
-    return {"ngTime": ngTime, "tiTime": tiTime}
+    #cupy method
+    A_gpu2 = cp.asarray(A_gpu)
+    B_gpu2 = cp.asarray(B_gpu)
+    cuStart= time.time()
+    cuC_gpu = cp.matmul(A_gpu2, B_gpu2)
+    cuEnd = time.time()
+    cuTime = cuEnd-cuStart
+    
+    
+    
+    
+    return {"ngTime": ngTime, "tiTime": tiTime, "cuTime": cuTime}
     
     
     
 #example:
-# threadTimes(20)
+#threadTimes(threads = 32, dim=2048)
 
 
 

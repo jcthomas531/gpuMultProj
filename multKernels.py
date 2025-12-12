@@ -118,8 +118,10 @@ def naiveGpu(A, B, C):
 #making above into a factory so i can dynamically set dimension size
 ###############################################################################
 #!!!!!!!!this is only set up to work on square matrices!!!!!!!!!!!!!!!!!!!!!
-#if you dont do this, you have set a single dimension size and once the code
+#if you dont do this as a function factory, you have set a single dimension size and once the code
 #compiles (ie the function is run), you cannot change it
+#outcome matrix size must be exactly divisible by threads, there is probably a way around this
+#but this is fine for now
 def tileMultFactory(tileSize):
     @cuda.jit
     def tileMult(A, B, C):
@@ -186,9 +188,9 @@ def tileMultFactory(tileSize):
 
 
 #example
-# tileMult = tileMultFactory(10)
+# tileMult = tileMultFactory(16)
 
-# N = 2000
+# N = 4096
 
 # A = np.random.normal(size = (N, N)).astype(np.float32)
 # B = np.random.normal(size = (N, N)).astype(np.float32)
@@ -202,7 +204,7 @@ def tileMultFactory(tileSize):
 # #C_gpu = cuda.to_device(C)
 # C_gpu = cuda.device_array((N, N), dtype=np.float32)
 
-# threadsPerBlock = (10,10)
+# threadsPerBlock = (16,16)
 
 # blocksPerGrid_x = int(np.ceil(N/threadsPerBlock[0]))
 # blocksPerGrid_y = int(np.ceil(N/threadsPerBlock[1]))
@@ -212,7 +214,7 @@ def tileMultFactory(tileSize):
 # CRes = C_gpu.copy_to_host()
 
 # CTest = A @ B
-# np.allclose(CTest, CRes, atol=1e-4, rtol=1e-4)
+# np.allclose(CTest, CRes, atol=1e-3, rtol=1e-3)
 # #tolerance can be an issue when using float32, not as percise as 64 but will 
 # #work faster, should be consistent across all methods used, float32 is probably 
 # #better here and just lowering the tolerance threshold
